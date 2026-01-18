@@ -1,4 +1,6 @@
-// SGPA Prediction System - Main Application
+// SGPA Prediction System - Main Application with Server API
+const API_URL = 'http://localhost:3000/api';
+
 class SGPASystem {
     constructor() {
         this.currentUser = null;
@@ -9,8 +11,8 @@ class SGPASystem {
         this.init();
     }
 
-    init() {
-        this.loadData();
+    async init() {
+        await this.loadData();
         this.attachEventListeners();
     }
 
@@ -27,39 +29,65 @@ class SGPASystem {
         };
     }
 
-    loadData() {
-        const userData = localStorage.getItem('sgpa_user');
-        const usersData = localStorage.getItem('sgpa_users');
-        const subjectsData = localStorage.getItem('sgpa_subjects');
-        const marksData = localStorage.getItem('sgpa_marks');
+    async loadData() {
+        try {
+            // Load current user from localStorage (session only)
+            const userData = localStorage.getItem('sgpa_current_user');
+            if (userData) {
+                this.currentUser = JSON.parse(userData);
+                await this.loadUserData(this.currentUser.usn);
+            }
 
-        if (userData) this.currentUser = JSON.parse(userData);
-        if (usersData) this.users = JSON.parse(usersData);
-        if (subjectsData) this.subjects = JSON.parse(subjectsData);
-        if (marksData) this.marks = JSON.parse(marksData);
+            // Load all users from server
+            const response = await fetch(`${API_URL}/users`);
+            if (response.ok) {
+                this.users = await response.json();
+            }
+        } catch (error) {
+            console.error('Error loading data:', error);
+            this.showAlert('error', 'Could not connect to server. Please make sure the server is running.');
+        }
     }
 
-    saveData() {
-        localStorage.setItem('sgpa_user', JSON.stringify(this.currentUser));
-        localStorage.setItem('sgpa_users', JSON.stringify(this.users));
-        localStorage.setItem('sgpa_subjects', JSON.stringify(this.subjects));
-        localStorage.setItem('sgpa_marks', JSON.stringify(this.marks));
+    async loadUserData(usn) {
+        try {
+            // Load subjects
+            const subjectsResponse = await fetch(`${API_URL}/subjects/${usn}`);
+            if (subjectsResponse.ok) {
+                this.subjects = await subjectsResponse.json();
+            }
 
-        // Also save to downloadable JSON file
-        this.saveToJSONFile();
+            // Load marks
+            const marksResponse = await fetch(`${API_URL}/marks/${usn}`);
+            if (marksResponse.ok) {
+                this.marks = await marksResponse.json();
+            }
+        } catch (error) {
+            console.error('Error loading user data:', error);
+        }
     }
 
-    saveToJSONFile() {
-        const data = {
-            users: this.users,
-            currentUser: this.currentUser,
-            subjects: this.subjects,
-            marks: this.marks,
-            lastUpdated: new Date().toISOString()
-        };
+    async saveUserData() {
+        if (!this.currentUser) return;
 
-        // Store in localStorage as backup
-        localStorage.setItem('sgpa_data_backup', JSON.stringify(data));
+        try {
+            // Save subjects
+            await fetch(`${API_URL}/subjects/${this.currentUser.usn}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(this.subjects)
+            });
+
+            // Save marks
+            await fetch(`${API_URL}/marks/${this.currentUser.usn}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(this.marks)
+            });
+        } catch (error) {
+            console.error('Error saving user data:', error);
+            this.showAlert('error', 'Could not save data to server');
+        }
     }
 
     attachEventListeners() {
@@ -118,7 +146,7 @@ class SGPASystem {
         document.getElementById('login-form-container').style.display = 'block';
     }
 
-    handleRegister(e) {
+    async handleRegister(e) {
         e.preventDefault();
         const formData = new FormData(e.target);
 
@@ -132,77 +160,73 @@ class SGPASystem {
             return;
         }
 
-        // Check if user already exists
-        if (this.users.find(u => u.usn === usn)) {
-            this.showAlert('error', 'USN already registered! Please login.');
-            return;
-        }
-
-        // Create new user
-        const newUser = {
-            usn: usn,
-            password: password,
+        const userData = {
+            usn,
+            password,
             name: formData.get('studentName'),
             academicYear: formData.get('academicYear'),
             semester: formData.get('semester'),
-            role: formData.get('role'),
-            registeredAt: new Date().toISOString()
+            role: formData.get('role')
         };
 
-        this.users.push(newUser);
-        localStorage.setItem('sgpa_users', JSON.stringify(this.users));
+        try {
+            const response = await fetch(`${API_URL}/register`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(userData)
+            });
 
-        this.showAlert('success', 'Registration successful! Please login.');
-        e.target.reset();
-        this.showLoginForm();
+            const result = await response.json();
+
+            if (response.ok) {
+                this.showAlert('success', 'Registration successful! Please login.');
+                e.target.reset();
+                this.showLoginForm();
+                await this.loadData(); // Reload users list
+            } else {
+                this.showAlert('error', result.error || 'Registration failed');
+            }
+        } catch (error) {
+            console.error('Registration error:', error);
+            this.showAlert('error', 'Could not connect to server');
+        }
     }
 
-    handleLogin(e) {
+    async handleLogin(e) {
         e.preventDefault();
         const formData = new FormData(e.target);
 
         const usn = formData.get('usn');
         const password = formData.get('password');
 
-        // Find user
-        const user = this.users.find(u => u.usn === usn && u.password === password);
+        try {
+            const response = await fetch(`${API_URL}/login`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ usn, password })
+            });
 
-        if (!user) {
-            this.showAlert('error', 'Invalid USN or password!');
-            return;
-        }
+            const result = await response.json();
 
-        this.currentUser = user;
-        this.loadUserData(usn);
-        this.saveData();
-        this.showDashboard();
-    }
-
-    loadUserData(usn) {
-        // Load user-specific subjects and marks
-        const userSubjects = localStorage.getItem(`sgpa_subjects_${usn}`);
-        const userMarks = localStorage.getItem(`sgpa_marks_${usn}`);
-
-        if (userSubjects) this.subjects = JSON.parse(userSubjects);
-        else this.subjects = [];
-
-        if (userMarks) this.marks = JSON.parse(userMarks);
-        else this.marks = {};
-    }
-
-    saveUserData() {
-        if (this.currentUser) {
-            localStorage.setItem(`sgpa_subjects_${this.currentUser.usn}`, JSON.stringify(this.subjects));
-            localStorage.setItem(`sgpa_marks_${this.currentUser.usn}`, JSON.stringify(this.marks));
+            if (response.ok) {
+                this.currentUser = result.user;
+                localStorage.setItem('sgpa_current_user', JSON.stringify(this.currentUser));
+                await this.loadUserData(usn);
+                this.showDashboard();
+            } else {
+                this.showAlert('error', result.error || 'Invalid credentials');
+            }
+        } catch (error) {
+            console.error('Login error:', error);
+            this.showAlert('error', 'Could not connect to server');
         }
     }
 
     handleLogout() {
-        this.saveUserData();
         this.currentUser = null;
         this.subjects = [];
         this.marks = {};
-        localStorage.removeItem('sgpa_user');
+        localStorage.removeItem('sgpa_current_user');
         this.showLogin();
     }
 
@@ -411,13 +435,6 @@ class SGPASystem {
                                 </svg>
                                 <span>Download Data</span>
                             </button>
-                            <button class="action-btn" onclick="alert('Student list feature coming soon!')">
-                                <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                    <path d="M17 21V19C17 17.9391 16.5786 16.9217 15.8284 16.1716C15.0783 15.4214 14.0609 15 13 15H5C3.93913 15 2.92172 15.4214 2.17157 16.1716C1.42143 16.9217 1 17.9391 1 19V21" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                                    <path d="M9 11C11.2091 11 13 9.20914 13 7C13 4.79086 11.2091 3 9 3C6.79086 3 5 4.79086 5 7C5 9.20914 6.79086 11 9 11Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                                </svg>
-                                <span>View Students</span>
-                            </button>
                         </div>
                     </div>
                 </div>
@@ -539,7 +556,7 @@ class SGPASystem {
         document.getElementById('subject-form').reset();
     }
 
-    handleAddSubject(e) {
+    async handleAddSubject(e) {
         e.preventDefault();
         const formData = new FormData(e.target);
 
@@ -550,10 +567,10 @@ class SGPASystem {
             credits: parseInt(formData.get('subject-credits'))
         };
 
-        console.log('Adding subject:', subject); // Debug
+        console.log('Adding subject:', subject);
 
         this.subjects.push(subject);
-        this.saveUserData();
+        await this.saveUserData();
         this.closeAddSubjectModal();
         this.renderSubjects();
         if (this.currentUser.role === 'student') {
@@ -562,11 +579,11 @@ class SGPASystem {
         this.showAlert('success', 'Subject added successfully!');
     }
 
-    deleteSubject(index) {
+    async deleteSubject(index) {
         if (confirm('Are you sure you want to delete this subject?')) {
             this.subjects.splice(index, 1);
             delete this.marks[index];
-            this.saveUserData();
+            await this.saveUserData();
             this.renderSubjects();
             if (this.currentUser.role === 'student') {
                 this.renderOverview();
@@ -670,12 +687,12 @@ class SGPASystem {
         }).join('');
     }
 
-    updateMarks(subjectIndex, field, value) {
+    async updateMarks(subjectIndex, field, value) {
         if (!this.marks[subjectIndex]) {
             this.marks[subjectIndex] = {};
         }
         this.marks[subjectIndex][field] = parseFloat(value) || 0;
-        this.saveUserData();
+        await this.saveUserData();
     }
 
     calculateCIE(subject, marks) {
@@ -931,27 +948,27 @@ class SGPASystem {
         `;
     }
 
-    downloadData() {
-        const data = {
-            users: this.users,
-            currentUser: this.currentUser,
-            subjects: this.subjects,
-            marks: this.marks,
-            exportedAt: new Date().toISOString()
-        };
+    async downloadData() {
+        try {
+            const response = await fetch(`${API_URL}/download`);
+            const data = await response.json();
 
-        const dataStr = JSON.stringify(data, null, 2);
-        const dataBlob = new Blob([dataStr], { type: 'application/json' });
-        const url = URL.createObjectURL(dataBlob);
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = `sgpa_data_${new Date().toISOString().split('T')[0]}.json`;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        URL.revokeObjectURL(url);
+            const dataStr = JSON.stringify(data, null, 2);
+            const dataBlob = new Blob([dataStr], { type: 'application/json' });
+            const url = URL.createObjectURL(dataBlob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `sgpa_data_${new Date().toISOString().split('T')[0]}.json`;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(url);
 
-        this.showAlert('success', 'Data downloaded successfully!');
+            this.showAlert('success', 'Data downloaded successfully!');
+        } catch (error) {
+            console.error('Download error:', error);
+            this.showAlert('error', 'Could not download data');
+        }
     }
 
     showAlert(type, message) {
